@@ -1,9 +1,9 @@
 -- LocalScript
 -- Put in StarterPlayer > StarterPlayerScripts
-
+while true do
 local TextChatService = game:GetService("TextChatService")
 
-local message = "Hi there uwu"
+local message = "uwu"
 
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 	-- New chat
@@ -25,4 +25,6 @@ else
 			sayMessageRequest:FireServer(message, "All")
 		end
 	end
+end
+wait(5)
 end
