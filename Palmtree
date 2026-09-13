@@ -1,1 +1,28 @@
-print("snhex")
+-- LocalScript
+-- Put in StarterPlayer > StarterPlayerScripts
+
+local TextChatService = game:GetService("TextChatService")
+
+local message = "Hi there uwu"
+
+if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	-- New chat
+	local textChannels = TextChatService:WaitForChild("TextChannels")
+	local general = textChannels:FindFirstChild("RBXGeneral")
+
+	if general then
+		general:SendAsync(message)
+	end
+else
+	-- Old chat
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local events = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+
+	if events then
+		local sayMessageRequest = events:FindFirstChild("SayMessageRequest")
+
+		if sayMessageRequest then
+			sayMessageRequest:FireServer(message, "All")
+		end
+	end
+end
